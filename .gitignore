@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+feel_inline_cache.sqlite3
+out.png
+out.webp
+.DS_Store
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
+checks.json
