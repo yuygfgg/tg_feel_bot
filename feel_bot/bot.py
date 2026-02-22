@@ -24,8 +24,6 @@ from .render import content_key, normalize_first_line, render_feel_image
 
 log = logging.getLogger("feel_bot")
 
-_OWNER_KEY = "sticker_set_owner_user_id"
-_SET_NAME_KEY = "sticker_set_name"
 _LATEST_INLINE_QUERY_ID: dict[int, str] = {}
 _VERIFIED_STICKER_SETS: set[str] = set()
 
@@ -34,69 +32,59 @@ def _help_text() -> str:
     return "用法:\n" "- /feel 吃牛排\n" "- Inline: 在任意聊天输入 @bot_name 吃牛排"
 
 
-async def _get_owner_user_id(cache: InlineCache) -> int | None:
-    v = cache.get_meta(_OWNER_KEY)
-    return int(v) if v else None
-
-
-async def _save_owner_user_id(cache: InlineCache, user_id: int) -> None:
-    cache.set_meta(_OWNER_KEY, str(user_id))
-
-
-async def _ensure_sticker_set(bot, cache: InlineCache, owner_user_id: int) -> str:
-    """Ensure the bot's sticker set exists, return its name."""
-    saved_name = cache.get_meta(_SET_NAME_KEY)
-
-    if saved_name and saved_name in _VERIFIED_STICKER_SETS:
-        return saved_name
-
-    if saved_name:
-        try:
-            await bot.get_sticker_set(saved_name)
-            _VERIFIED_STICKER_SETS.add(saved_name)
-            return saved_name
-        except BadRequest:
-            pass
-
+async def _ensure_sticker_set(bot, user_id: int) -> str:
+    """Ensure the user's sticker set exists, return its name."""
     bot_username = bot.username or bot.name
-    set_name = f"feel_stk_by_{bot_username}"
+    # Telegram sticker set name: must end in _by_<bot_username>
+    # We use f_{user_id}_by_{bot_username} to make it unique per user.
+    set_name = f"f_{user_id}_by_{bot_username}"
+
+    if set_name in _VERIFIED_STICKER_SETS:
+        return set_name
 
     try:
         await bot.get_sticker_set(set_name)
+        _VERIFIED_STICKER_SETS.add(set_name)
+        return set_name
     except BadRequest:
-        # Placeholder 1x1 white WebP
-        from .render import render_feel_image as _render
-        import io
-        from PIL import Image
+        pass
 
-        placeholder = io.BytesIO()
-        Image.new("RGBA", (512, 512), (255, 255, 255, 0)).save(placeholder, "WEBP")
-        placeholder_bytes = placeholder.getvalue()
+    # If not exists, create it
+    # Placeholder 1x1 white WebP
+    from PIL import Image
+    import io
 
-        input_sticker = InputSticker(
-            sticker=placeholder_bytes,
-            emoji_list=["😊"],
-            format="static",
-        )
-        await bot.create_new_sticker_set(
-            user_id=owner_user_id,
-            name=set_name,
-            title="Feel Bot",
-            stickers=[input_sticker],
-        )
-        # Delete the placeholder sticker so the set is empty
-        sticker_set = await bot.get_sticker_set(set_name)
-        if sticker_set.stickers:
-            await bot.delete_sticker_from_set(sticker_set.stickers[0].file_id)
+    placeholder = io.BytesIO()
+    Image.new("RGBA", (512, 512), (255, 255, 255, 0)).save(placeholder, "WEBP")
+    placeholder_bytes = placeholder.getvalue()
 
-    cache.set_meta(_SET_NAME_KEY, set_name)
+    input_sticker = InputSticker(
+        sticker=placeholder_bytes,
+        emoji_list=["😊"],
+        format="static",
+    )
+    
+    # This requires the user to have interacted with the bot (e.g. /start)
+    # so the bot has permission to create a sticker set for them.
+    await bot.create_new_sticker_set(
+        user_id=user_id,
+        name=set_name,
+        title=f"Feel {user_id}",
+        stickers=[input_sticker],
+    )
+    
+    # Delete the placeholder sticker so the set is empty
+    sticker_set = await bot.get_sticker_set(set_name)
+    if sticker_set.stickers:
+        await bot.delete_sticker_from_set(sticker_set.stickers[0].file_id)
+
     _VERIFIED_STICKER_SETS.add(set_name)
     return set_name
 
 
 async def _upload_sticker_via_set(
     bot,
-    owner_user_id: int,
+    user_id: int,
     webp: bytes,
     set_name: str,
 ) -> str:
@@ -112,7 +100,7 @@ async def _upload_sticker_via_set(
     for attempt in range(3):
         try:
             await bot.add_sticker_to_set(
-                user_id=owner_user_id,
+                user_id=user_id,
                 name=set_name,
                 sticker=input_sticker,
             )
@@ -132,6 +120,7 @@ async def _upload_sticker_via_set(
         raise RuntimeError("addStickerToSet rate limited after retries")
 
     sticker_set = await bot.get_sticker_set(set_name)
+    # The new sticker is usually the last one
     file_id = sticker_set.stickers[-1].file_id
     sticker_file_id_for_delete = sticker_set.stickers[-1].file_id
 
@@ -145,11 +134,6 @@ async def _upload_sticker_via_set(
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        cache: InlineCache = context.bot_data["inline_cache"]
-        owner = await _get_owner_user_id(cache)
-        if owner is None:
-            await _save_owner_user_id(cache, update.message.from_user.id)
-            log.info("Saved sticker-set owner user_id: %s", update.message.from_user.id)
         await update.message.reply_text(_help_text())
 
 
@@ -202,21 +186,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await iq.answer(results, cache_time=0, is_personal=True)
         return
 
-    owner_user_id = await _get_owner_user_id(cache)
-    if owner_user_id is None:
-        results = [
-            InlineQueryResultArticle(
-                id="no_owner",
-                title="请先向 Bot 发送 /start",
-                input_message_content=InputTextMessageContent(
-                    "需要先在 Bot 私聊中发送 /start，之后才能使用 inline 功能。"
-                ),
-                description="先 /start 初始化 Bot",
-            )
-        ]
-        await iq.answer(results, cache_time=0, is_personal=True)
-        return
-
+    # Try to reuse cached result
     try:
         base_bytes = cfg.base_image.read_bytes()
     except Exception:
@@ -261,24 +231,28 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     try:
-        set_name = await _ensure_sticker_set(context.bot, cache, owner_user_id)
+        set_name = await _ensure_sticker_set(context.bot, user_id)
         file_id = await _upload_sticker_via_set(
             bot=context.bot,
-            owner_user_id=owner_user_id,
+            user_id=user_id,
             webp=webp,
             set_name=set_name,
         )
     except Exception as e:
         log.exception("failed to upload sticker")
+        msg = str(e)
+        if any(x in msg.lower() for x in ["peer_id_invalid", "bot was blocked", "user not found"]):
+            error_title = "请先向 Bot 发送 /start"
+            error_text = "Bot 无法为您创建贴纸包，请先在私聊中发送 /start。"
+        else:
+            error_title = "贴纸上传失败"
+            error_text = f"贴纸上传失败: {e}"
+
         results = [
             InlineQueryResultArticle(
                 id="upload_failed",
-                title="贴纸上传失败",
-                input_message_content=InputTextMessageContent(
-                    "贴纸上传失败。\n"
-                    f"错误: {e}\n\n"
-                    "请确保 Bot 的 owner 用户已向 Bot 发送 /start。"
-                ),
+                title=error_title,
+                input_message_content=InputTextMessageContent(error_text),
                 description=str(e),
             )
         ]

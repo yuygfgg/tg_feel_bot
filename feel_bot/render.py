@@ -10,7 +10,6 @@ import functools
 
 
 def normalize_first_line(text: str) -> str:
-    # Single line, keep user input mostly intact.
     t = (text or "").strip().replace("\n", " ").replace("\r", " ")
     while "  " in t:
         t = t.replace("  ", " ")
@@ -19,7 +18,7 @@ def normalize_first_line(text: str) -> str:
 
 def content_key(base_image_bytes: bytes, first_line: str) -> str:
     h = hashlib.sha256()
-    h.update(b"WEBP_v1_")  # Invalidate old png cache
+    h.update(b"WEBP_v1_")
     h.update(base_image_bytes)
     h.update(b"\0")
     h.update(first_line.encode("utf-8", errors="replace"))
@@ -68,7 +67,6 @@ def _truncate_to_fit(
         return text
 
     ell = "…"
-    # Worst-case linear scan; strings are short in practice.
     for n in range(len(text) - 1, 0, -1):
         cand = text[:n].rstrip() + ell
         l, t, r, b = draw.textbbox((0, 0), cand, font=font)
@@ -81,11 +79,12 @@ def _truncate_to_fit(
 def _get_scaled_base_image(
     base_image_path: Path, text_box: tuple[int, int, int, int]
 ) -> tuple[Image.Image, tuple[int, int, int, int]]:
-    """Loads base image and scales it down to max 512px (Telegram sticker requirement)."""
+    """
+    Loads base image and scales it down to max 512px.
+    """
     base_bytes = base_image_path.read_bytes()
     im = Image.open(io.BytesIO(base_bytes)).convert("RGBA")
 
-    # Scale such that max dimension is 512
     w, h = im.size
     max_dim = max(w, h)
 
@@ -94,10 +93,8 @@ def _get_scaled_base_image(
         scale_factor = 512.0 / max_dim
         new_w = int(w * scale_factor)
         new_h = int(h * scale_factor)
-        # Resampling.LANCZOS is high quality
         im = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
 
-    # Scale the textbook
     if scale_factor != 1.0:
         x0, y0, x1, y1 = text_box
         text_box = (
