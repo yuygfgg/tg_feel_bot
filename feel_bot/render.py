@@ -34,6 +34,7 @@ def _pick_font_path(user_font: Path | None) -> Path:
         "No usable CJK font found. Set FEEL_FONT_PATH to a .ttf/.otf/.ttc that supports Chinese."
     )
 
+
 def _fit_font(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -67,12 +68,19 @@ def _truncate_to_fit(
         return text
 
     ell = "…"
-    for n in range(len(text) - 1, 0, -1):
-        cand = text[:n].rstrip() + ell
+
+    lo, hi = 1, len(text)
+    best = ell
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = text[:mid].rstrip() + ell
         l, t, r, b = draw.textbbox((0, 0), cand, font=font)
         if (r - l) <= max_width:
-            return cand
-    return ell
+            best = cand
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
 
 
 @functools.lru_cache(maxsize=1)
