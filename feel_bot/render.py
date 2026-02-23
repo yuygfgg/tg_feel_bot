@@ -18,7 +18,7 @@ def normalize_first_line(text: str) -> str:
 
 def content_key(base_image_bytes: bytes, first_line: str) -> str:
     h = hashlib.sha256()
-    h.update(b"WEBP_v1_")
+    h.update(b"WEBP_v2_")
     h.update(base_image_bytes)
     h.update(b"\0")
     h.update(first_line.encode("utf-8", errors="replace"))

@@ -1,6 +1,6 @@
 # tg_feel_bot
 
-一个 Telegram 表情包机器人：把 `pic.jpeg` 的第一行文字替换成你输入的内容，第二行保留底图原字。
+一个 Telegram 表情包机器人：把 `feel.png` 的第一行文字替换成你输入的内容，第二行保留底图原字。
 
 ## 功能
 
@@ -23,7 +23,7 @@ cp .env.example .env
 
 - `FEEL_STICKER_SALT`：用于生成匿名的贴纸包名。建议设置为一段足够长的随机字符串，默认 `TELEGRAM_BOT_TOKEN` 的前 16 位
 - `FEEL_FONT_PATH`：字体文件路径（需要支持中文）。默认 `./SweiGoticCJKsc-Bold.ttf`
-- `FEEL_BASE_IMAGE`：底图路径，默认 `./pic.jpeg`
+- `FEEL_BASE_IMAGE`：底图路径，默认 `./feel.png`
 - `FEEL_MAX_TEXT_LEN`：输入文字长度上限，默认 `80`
 - `FEEL_RENDER_CONCURRENCY`：同时渲染的并发数，默认 `2`
 

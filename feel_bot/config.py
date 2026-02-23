@@ -22,7 +22,7 @@ def load_config() -> FeelConfig:
     if not bot_token:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
 
-    base_image = Path(os.environ.get("FEEL_BASE_IMAGE", "./pic.jpeg")).expanduser()
+    base_image = Path(os.environ.get("FEEL_BASE_IMAGE", "./feel.png")).expanduser()
 
     font_path_raw = os.environ.get("FEEL_FONT_PATH")
     font_path = (
