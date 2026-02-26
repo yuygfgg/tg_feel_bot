@@ -29,10 +29,35 @@ log = logging.getLogger("feel_bot")
 _LATEST_INLINE_QUERY_ID: dict[int, str] = {}
 _VERIFIED_STICKER_SETS: set[str] = set()
 _WARNED_STICKER_SALT: bool = False
+_CACHED_BOT_USERNAME: str | None = None
+_USER_STICKER_SET_SUFFIX: dict[int, str] = {}
+_USER_STICKER_SET_ROTATE_SEQ: dict[int, int] = {}
 
 
-def _help_text() -> str:
-    return "用法:\n" "- /feel 吃牛排\n" "- Inline: 在任意聊天输入 @bot_name 吃牛排"
+async def _bot_username(bot) -> str:
+    global _CACHED_BOT_USERNAME
+    if _CACHED_BOT_USERNAME:
+        return _CACHED_BOT_USERNAME
+
+    username = (getattr(bot, "username", None) or "").strip()
+    if not username:
+        try:
+            me = await bot.get_me()
+            username = (getattr(me, "username", None) or "").strip()
+        except Exception:
+            log.warning("Failed to fetch bot username for help text", exc_info=True)
+
+    if username:
+        _CACHED_BOT_USERNAME = username
+        return username
+    return "bot"
+
+
+async def _help_text(bot) -> str:
+    bot_username = await _bot_username(bot)
+    return (
+        "用法:\n" "- /feel 吃牛排\n" f"- Inline: 在任意聊天输入 @{bot_username} 吃牛排"
+    )
 
 
 def _safe_bot_username_for_sticker_set(bot) -> str:
@@ -65,9 +90,24 @@ def _sticker_set_name(cfg: FeelConfig, bot, user_id: int) -> tuple[str, str]:
         f"v1:{_sticker_salt(cfg)}:{user_id}".encode("utf-8", errors="replace")
     ).hexdigest()[:16]
 
-    set_name = f"f_{digest}_by_{bot_username}"
+    suffix = _USER_STICKER_SET_SUFFIX.get(user_id)
+    if suffix:
+        set_name = f"f_{digest}_{suffix}_by_{bot_username}"
+    else:
+        set_name = f"f_{digest}_by_{bot_username}"
     title = "Feel"
     return set_name, title
+
+
+def _rotate_sticker_set_suffix(cfg: FeelConfig, user_id: int) -> str:
+    seq = _USER_STICKER_SET_ROTATE_SEQ.get(user_id, 0) + 1
+    _USER_STICKER_SET_ROTATE_SEQ[user_id] = seq
+
+    suffix = hashlib.sha256(
+        f"v2:{_sticker_salt(cfg)}:{user_id}:{seq}".encode("utf-8", errors="replace")
+    ).hexdigest()[:8]
+    _USER_STICKER_SET_SUFFIX[user_id] = suffix
+    return suffix
 
 
 def _normalize_user_text(text: str, *, max_len: int) -> str:
@@ -127,6 +167,30 @@ async def _ensure_sticker_set(bot, user_id: int, cfg: FeelConfig) -> str:
     return set_name
 
 
+def _is_missing_sticker_set_error(e: Exception) -> bool:
+    if not isinstance(e, BadRequest):
+        return False
+
+    msg = str(e).lower()
+    # Observed is "Stickerset_invalid", check more variants just in case.
+    return any(
+        x in msg
+        for x in [
+            "stickerset_invalid",
+            "sticker set invalid",
+            "sticker set not found",
+            "stickerset not found",
+            "stickerset_name_invalid",
+            "sticker set_name not found",
+            "shortname_occupy_failed",
+            "sticker set name is already occupied",
+            "shortname_invalid",
+            "short name invalid",
+            "pack_short_name_invalid",
+        ]
+    )
+
+
 async def _upload_sticker_via_set(
     bot,
     user_id: int,
@@ -179,7 +243,7 @@ async def _upload_sticker_via_set(
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        await update.message.reply_text(_help_text())
+        await update.message.reply_text(await _help_text(context.bot))
 
 
 async def feel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -193,7 +257,7 @@ async def feel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not text:
         if update.message:
-            await update.message.reply_text(_help_text())
+            await update.message.reply_text(await _help_text(context.bot))
         return
 
     if update.message:
@@ -208,7 +272,7 @@ async def feel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 text_box=cfg.text_box,
                 font_path=cfg.font_path,
             )
-    except Exception as e:
+    except Exception:
         log.exception("render failed")
         if update.message:
             await update.message.reply_text("生成失败，请稍后再试。")
@@ -241,12 +305,14 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await iq.answer(results, cache_time=0, is_personal=True)
         return
     if not query:
+        help_text = await _help_text(context.bot)
+        bot_username = await _bot_username(context.bot)
         results = [
             InlineQueryResultArticle(
                 id="help",
                 title="输入文字生成表情包",
-                input_message_content=InputTextMessageContent(_help_text()),
-                description="例如: @bot_name 吃牛排",
+                input_message_content=InputTextMessageContent(help_text),
+                description=f"例如: @{bot_username} 吃牛排",
             )
         ]
         await iq.answer(results, cache_time=0, is_personal=True)
@@ -285,7 +351,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 text_box=cfg.text_box,
                 font_path=cfg.font_path,
             )
-    except Exception as e:
+    except Exception:
         log.exception("render failed (inline)")
         results = [
             InlineQueryResultArticle(
@@ -300,12 +366,48 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     try:
         set_name = await _ensure_sticker_set(context.bot, user_id, cfg)
-        file_id = await _upload_sticker_via_set(
-            bot=context.bot,
-            user_id=user_id,
-            webp=webp,
-            set_name=set_name,
-        )
+        try:
+            file_id = await _upload_sticker_via_set(
+                bot=context.bot,
+                user_id=user_id,
+                webp=webp,
+                set_name=set_name,
+            )
+        except Exception as e:
+            if not _is_missing_sticker_set_error(e):
+                raise
+
+            last_error: Exception = e
+            _VERIFIED_STICKER_SETS.discard(set_name)
+
+            file_id: str | None = None
+            for recovery_step in range(1, 6):
+                suffix = _rotate_sticker_set_suffix(cfg, user_id)
+                log.warning(
+                    "Sticker set %s invalid; rotating to suffix=%s (%d/5)",
+                    set_name,
+                    suffix,
+                    recovery_step,
+                )
+                candidate_set_name, _ = _sticker_set_name(cfg, context.bot, user_id)
+
+                try:
+                    set_name = await _ensure_sticker_set(context.bot, user_id, cfg)
+                    file_id = await _upload_sticker_via_set(
+                        bot=context.bot,
+                        user_id=user_id,
+                        webp=webp,
+                        set_name=set_name,
+                    )
+                    break
+                except Exception as recovery_error:
+                    if not _is_missing_sticker_set_error(recovery_error):
+                        raise
+                    last_error = recovery_error
+                    _VERIFIED_STICKER_SETS.discard(candidate_set_name)
+
+            if file_id is None:
+                raise last_error
     except Exception as e:
         log.exception("failed to upload sticker")
         msg_lower = str(e).lower()
